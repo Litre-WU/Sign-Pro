@@ -3,7 +3,7 @@
 
 ### 重构优化思路
 
-![demo.png](https://github.com/Litre-WU/Sign-Pro/blob/main/demo.png)
+<img src=https://github.com/Litre-WU/Sign-Pro/blob/main/demo.png width=300/>
 
 1.将各种类型统一结构化存入数据库中
 2.脚本只需要路由函数和结构化数据解析函数即可
