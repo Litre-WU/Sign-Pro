@@ -18,9 +18,7 @@ db_path = str(Path(__file__).parent / "tmp")
 
 cache = Cache(db_path)
 
-
 app = FastAPI(title="API", version="1.0.0")
-
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,10 +47,60 @@ async def api(request: Request, path: str, background_tasks: BackgroundTasks,
               token: Union[str, None] = Body(default="XXX"),
               secret: Union[str, None] = Body(default="XXX"),
               time: Union[str, None] = Body(default="09:00:00")):
-    cid = hmac.new("sign".encode(), f'{cookie}'.encode(), digestmod="MD5").hexdigest()
-    print(cid)
-    # if cookie:
-    #     cache["account-x"][path].update({"cookies": {cid: {"cookie": cookie, "time": time}}})
+    Cookie = cookies.SimpleCookie()
+    Cookie.load(cookie)
+    cookie = {k: morsel.value for k, morsel in Cookie.items()}
+    args = cache["fun"][path]["args"]
+
+    print(f'\033[94m{args}')
+
+    for i, arg in enumerate(args):
+        if arg in cookie:
+            args[i] = cookie[arg]
+        if "token" in arg:
+            args[i] = token
+        if "secret" in arg:
+            args[i] = secret
+        if arg.startswith(":"):
+            if "format" in arg:
+                args[i] = eval(arg[1:])
+            else:
+                args[i] = eval(arg[1:].format(*args[:i]))
+
+    print(f'\033[96m{args}')
+
+    # 参数替换
+    def args_sub(args, data):
+        for i in re.findall(r'!(\d+)~', dumps(data)):
+            try:
+                data = loads(re.sub(f'!{int(i)}~', str(args[int(i)]), dumps(data)))
+            except Exception as e:
+                print(f'\033[94margs_sub {i} {args[int(i)]} {data} {e}')
+        return data
+
+    for meta in cache["fun"][path]["fetch"]:
+        for k, v in meta.items():
+            if type(v) == dict:
+                meta[k] = args_sub(args, v)
+                print(k, meta[k])
+
+        print(meta)
+
+        res = await fetch(**meta)
+        if res and res.status_code == 200:
+            print(res.text)
+            # 账号更新
+            account_x = {"cookie": cookie, "token": token, "secret": secret}
+            if path == "ding":
+                account_x.update({"access_token": token})
+            cache["account-x"][path].update({hmac.new("sign".encode(), f'{cookie}{token}{secret}'.encode(),
+                                                      digestmod="MD5").hexdigest(): account_x})
+        else:
+            try:
+                cache["account-x"][path].delete(
+                    hmac.new("sign".encode(), f'{cookie}{token}{secret}'.encode(), digestmod="MD5").hexdigest())
+            except:
+                pass
 
 
 # 请求函数
@@ -75,94 +123,55 @@ async def fetch(*args, **kwargs):
         return await fetch(retry, **kwargs)
 
 
-async def test():
-    path = "ding"
-    token = ""
-    secret = ""
-
-    args = cache["fun"][path]["args"]
-
-    for i, arg in enumerate(args):
-        if "token" in arg:
-            args[i] = token
-        if "secret" in arg:
-            args[i] = secret
-        if arg.startswith(":"):
-            args[i] = eval(arg[1:].format(*args[:i]))
-    for meta in cache["fun"]["ding"]["fetch"]:
-        for k, v in meta["params"].items():
-            if v.startswith("{") and v.endswith("}"):
-                meta["params"][k] = v.format(*args)
-        for i in re.findall(r'!(\d+)~', dumps(meta["json"])):
-            meta["json"] = loads(re.sub(f'!{int(i)}~', args[int(i)], dumps(meta["json"])))
-        print(meta)
-        res = await fetch(**meta)
-        if res and res.status_code == 200:
-            print(res.text)
-            if path == "ding":
-                cache["account-x"]["ding"].update({hmac.new("sign".encode(), f'{token}{secret}'.encode(),
-                                                            digestmod="MD5").hexdigest(): {'access_token': token,
-                                                                                           'secret': secret}})
+# 函数设定
+async def fun_set():
+    cache.set("fun", {
+        "jd": {
+            "fetch": [
+                {
+                    "method": "POST",
+                    "url": "https://api.m.jd.com/client.action",
+                    "params": {"functionId": "signBeanAct", "appid": "ld", "client": "apple"},
+                    "cookies": {
+                        "pt_key": "!0~",
+                        "pt_pin": "!1~"
+                    }
+                },
+                {
+                    "method": "POST",
+                    "url": "https://lop-proxy.jd.com/jiFenApi/signInAndGetReward",
+                    "json": [{"userNo": "$cooMrdGatewayUid$"}],
+                    "headers": {
+                        "AppParams": '{"appid":158,"ticket_type":"m"}',
+                        "uuid": "!2~",
+                        "LOP-DN": "jingcai.jd.com"
+                    },
+                    "cookies": {
+                        "pt_key": "!0~",
+                        "pt_pin": "!1~"
+                    }}],
+            "args": ["pt_key", "pt_pin", ":'{:.0f}'.format(time() * 10 ** 13)"]},
+        # "csai": {"fetch": [], "args": []},
+        "ding": {
+            "fetch": [{
+                "method": "POST",
+                "url": "https://oapi.dingtalk.com/robot/send",
+                "params": {
+                    "access_token": "!0~",
+                    "timestamp": "!1~",
+                    "sign": "!3~",
+                },
+                "json": {
+                    "msgtype": "text",
+                    "text": {"content": "!4~"}
+                },
+                "headers": {"Content-Type": "application/json"}
+            }],
+            "args": ["access_token", ":round(time() * 1000)", "secret",
+                     ":b64encode(hmac.new('{2}'.encode(), '{1}\\n{2}'.encode(), digestmod=hashlib.sha256).digest()).decode()",
+                     "测试"]},
+    })
 
 
 if __name__ == "__main__":
-    asyncio.run(test())
-
-    # cache.set("fun", {
-    #     "jd": {
-    #         "fetch": [
-    #             {
-    #                 "method": "POST",
-    #                 "url": "https://api.m.jd.com/client.action",
-    #                 "params": {"functionId": "signBeanAct", "appid": "ld", "client": "apple"},
-    #                 "cookies": {
-    #                     "pt_key": "~",
-    #                     "pt_pin": "~"
-    #                 }
-    #             },
-    #             {
-    #                 "method": "POST",
-    #                 "url": "https://lop-proxy.jd.com/jiFenApi/signInAndGetReward",
-    #                 "json": [{"userNo": "$cooMrdGatewayUid$"}],
-    #                 "headers": {
-    #                     "AppParams": '{"appid":158,"ticket_type":"m"}',
-    #                     "uuid": "~",
-    #                     "LOP-DN": "jingcai.jd.com"
-    #                 }}],
-    #         "args": ["pt_key", "pt_pin", ":'{:.0f}'.format(time() * 10 ** 13)"]},
-    #     # "csai": {"fetch": [], "args": []},
-    #     "ding": {
-    #         "fetch": [{
-    #             "method": "POST",
-    #             "url": "https://oapi.dingtalk.com/robot/send",
-    #             "params": {
-    #                 "access_token": "{0}",
-    #                 "timestamp": "{1}",
-    #                 "sign": "{3}",
-    #             },
-    #             "json": {
-    #                 "msgtype": "text",
-    #                 "text": {"content": "!4~"}
-    #             },
-    #             "headers": {"Content-Type": "application/json"}
-    #         }],
-    #         "args": ["access_token", ":round(time() * 1000)", "secret",
-    #                  ":b64encode(hmac.new('{2}'.encode(), '{1}\\n{2}'.encode(), digestmod=hashlib.sha256).digest()).decode()",
-    #                  "测试"]},
-    # })
-
-    # cache.set("account-x", {
-    #     "jd": {
-    #         "cookies":
-    #             {
-    #                 "c021c6668b8cff8bd64456c91b79e69e": {
-    #                     "cookie": "pt_key=AA; pt_pin=jd_;",
-    #                     "time": "01:00"}
-    #             }},
-    #     "ding": {
-    #         "a233f7076862a52a2a0b2c7b8658a8ae": {
-    #             "access_token": "",
-    #             "secret": ""
-    #         }}
-    # })
-
+    asyncio.run(fun_set())
